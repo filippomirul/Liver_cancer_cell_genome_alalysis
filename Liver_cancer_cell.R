@@ -19,6 +19,7 @@ library(MotifDb)
 library(seqLogo)
 library(PWMEnrich)
 library(PWMEnrich.Hsapiens.background)
+library(igraph)
 
 #### Data ####
 
@@ -29,32 +30,33 @@ load("Liver_hepatocellular_carcinoma.RData")
 
 ensembl <- useEnsembl(biomart = "ensembl",dataset = "hsapiens_gene_ensembl", mirror = "useast")
 
-query <- getBM(attributes = c("ensembl_gene_id", "gene_biotype", "external_gene_name"),
+query <- getBM(attributes = c("ensembl_gene_id", "gene_biotype", "external_gene_name", "entrezgene_id"),
                filters = c("ensembl_gene_id"),
                values = list(c(r_anno_df$ensembl_gene_id)),
                mart = ensembl)
 
 # Selecting only protein coding
 
-query <- query[query$gene_biotype == "protein_coding",]
-r_anno_df <- merge(query[,c(1,3)], r_anno_df[,c(1,3)], by="ensembl_gene_id")
-raw_counts_df <- raw_counts_df[query$ensembl_gene_id %in% rownames(raw_counts_df),]
+query <- query[which(query$gene_biotype == "protein_coding"),]
+
+r_anno_df <- r_anno_df[is.element(r_anno_df$ensembl_gene_id, query$ensembl_gene_id),]
+raw_counts_df <- raw_counts_df[is.element(rownames(raw_counts_df), query$ensembl_gene_id),]
 
 #### task 3 ####
 
-raw_count <- 20
-repl <- 5
+count_thr <- 20
+repl_thr <- 5
 
 # creating a vector of rows that we need to remove
 filter_vec <- apply(raw_counts_df, 1,
-                    function(y) max(by(y, c_anno_df$condition, function(x) sum(x>=raw_count))))
+                    function(y) max(by(y, c_anno_df$condition, function(x) sum(x>=count_thr))))
 
 # remove the rows from annotations and counts
-filter_counts_df <- raw_counts_df[filter_vec >= repl,]
+filter_counts_df <- raw_counts_df[filter_vec>=repl_thr,]
 filter_anno_df <- r_anno_df[rownames(filter_counts_df),]
 
-edge_c <- DGEList(counts=filter_counts_df, group=c_anno_df$condition, 
-                  samples=c_anno_df, genes=filter_anno_df) 
+edge_c <- DGEList(counts = filter_counts_df, group = c_anno_df$condition, 
+                  samples = c_anno_df, genes = filter_anno_df) 
 
 # normalization with Redge [TMM method]
 edge_n <- calcNormFactors(edge_c, method = "TMM")
@@ -67,8 +69,8 @@ colnames(design) <- levels(edge_n$samples$group)
 rownames(design) <- edge_n$samples$sample
 
 # calculate dispersion and fit with edgeR (necessary for differential expression analysis)
-edge_d <- estimateDisp(edge_n,design)
-edge_f <- glmQLFit(edge_d,design)
+edge_d <- estimateDisp(edge_n, design)
+edge_f <- glmQLFit(edge_d, design)
 
 # definition of the contrast (conditions to be compared)
 contrast <- makeContrasts("case-control", levels = design) 
@@ -122,6 +124,7 @@ convert <- getBM(attributes=c("ensembl_gene_id","entrezgene_id","external_gene_n
                  filters=c("ensembl_gene_id"), 
                  values=DEGs$ensembl_gene_id,
                  mart = ensembl)
+
 DEGs <- merge(DEGs, convert, by="ensembl_gene_id")
 anyNA(DEGs)
 # removing NAs
@@ -164,9 +167,9 @@ dotplot(down_ego_BP, showCategory = 20)
 heatplot(up_ego_BP, showCategory = 6)
 heatplot(down_ego_BP, showCategory = 6)
 
-x2 <- pairwise_termsim(UP_ego_BP) 
+x2 <- pairwise_termsim(up_ego_BP) 
 emapplot(x2)
-x2 <- pairwise_termsim(DOWN_ego_BP) 
+x2 <- pairwise_termsim(down_ego_BP) 
 emapplot(x2)
 
 # MF
@@ -193,7 +196,7 @@ dotplot(up_ego_MF, showCategory=20)
 dotplot(down_ego_MF, showCategory = 20)
 
 heatplot(up_ego_MF, showCategory = 6)
-heatplot(down_ego_MFP, showCategory = 6)
+heatplot(down_ego_MF, showCategory = 6)
 
 x2 <- pairwise_termsim(up_ego_MF) 
 emapplot(x2)
@@ -211,28 +214,99 @@ down_eKEGG <- enrichKEGG(gene = down_DEGs$entrezgene_id,
                 pvalueCutoff = 0.05,
                 qvalueCutoff = 0.1)
 
-tribble(head(up_eKEGG,6), head(down_eKEGG,6))
-
 #### Task 5 ####
 
-logFC <- up_DEGs$log_FC
-names(logFC) <- upDEGs$entrezgene_id
-pathview(gene.data = logFC, 
+FC <- up_DEGs$logFC
+names(FC) <- up_DEGs$entrezgene_id
+pathview(gene.data = FC, 
          pathway.id = "hsa05202", 
          species = "human")
 
 #### Task 6 ####
 
 sequences <- getSequence(id = up_DEGs$ensembl_gene_id, mart = ensembl,
-                         type = "ensembl_gene_id", upstream = 500, seqType = 'cdna')
+                         type = "ensembl_gene_id", upstream = 500, seqType = '5utr')
 data("PWMLogn.hg19.MotifDb.Hsap")
 seq <- lapply(sequences$cdna, function(x) DNAString(x))
-enrichedTF <- motifEnrichment(seq, PWMLogn.hg19.MotifDb.Hsap, score = "affinity")
+enrichedTF <- motifEnrichment(seq[1:20], PWMLogn.hg19.MotifDb.Hsap, score = "affinity")
 report <-  groupReport(enrichedTF)
 report
 plot(report[1:5])
 
-#### Task 8 ####
+#### Task 7 ####
+
+#ID2
+mdb.human <-  subset(MotifDb, organism =='Hsapiens' & geneSymbol == "ID2")
+PWM <-  toPWM(as.list(mdb.human))
+names(PWM) <-  sapply(names(PWM),function(x) strsplit(x,"-")[[1]][3])
+scores <- motifScores(sequences = seq[1:5], PWM, raw.scores = T)
+
+ecdf <-  motifEcdf(PWM, organism = "hg19", quick = TRUE)
+threshold <-  log2(quantile(ecdf$ID2, 0.9975))
+threshold
+plotMotifScores(scores, sel.motifs="ID2", col = c("red","green","blue"), cutoff = threshold)
+
+#### task 8 ####
+
+tfs <- report$target[1:10]
+scores <- data.frame(c(1:length(seq)))
+#scores <- data.frame(c(1:5))
+
+
+for (i in (1:5)){
+  tfs_motif <- subset(MotifDb, organism == "Hsapiens" & geneSymbol == tfs[i])
+  PWM <- toPWM(as.list(tfs_motif))
+  names(PWM) <-  sapply(names(PWM),function(x) strsplit(x,"-")[[1]][3])
+
+  ecdf <- motifEcdf(PWM, organism = "hg19", quick = T)
+  threshold <-  log2(quantile(ecdf[[tfs[i]]], 0.9975))
+  name <- tfs[i]
+  
+  sco <- motifScores(sequences = seq , PWM, cutoff = threshold)
+  sco <-  as.data.frame(apply(sco, 1, sum))
+  colnames(sco) <- name
+  
+  scores <- cbind(scores, sco)
+  
+  #fraction_9975 <- append(fraction_9975, length(which(apply(scores,1,sum) > 0)) /100)
+}
+ scores <- scores[,2:ncol(scores)]
+
+result <- logical(nrow(scores))
+
+# Loop through each row of the dataframe
+for (i in 1:nrow(scores)) {
+  # Check if any value in the row is equal to 0
+  if (any(scores[i, ] < 3)) {
+    result[i] <- FALSE
+  } else {
+    result[i] <- TRUE
+  }
+}
+
+
+
+#### task 9 ####
+
+up_names <- up_DEGs$external_gene_name
+write.table(up_DEGs$external_gene_name,"up_DEGs.txt", sep="\n", row.names = F)
+links <- read.delim("string_interactions_short.tsv")
+
+#### Task 10 ####
+
+
+ensembl <- useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+query <- getBM(attributes = c("external_gene_name","ensembl_gene_id","description",
+                              "gene_biotype","start_position","end_position",
+                              "chromosome_name","strand"),
+               filters = c("ensembl_gene_id"), 
+               values = up_DEGs[,1],
+               mart = ensembl)
+
+query <-  unique(query[,c(1,3:6)])
+
+## Create the network
+net <- igraph::graph_from_data_frame(d = links, vertices = query, directed = FALSE)
 
 
 
