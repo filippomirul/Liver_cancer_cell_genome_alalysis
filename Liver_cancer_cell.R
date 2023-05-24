@@ -20,6 +20,7 @@ library(seqLogo)
 library(PWMEnrich)
 library(PWMEnrich.Hsapiens.background)
 library(igraph)
+library(doParallel)
 
 #### Data ####
 
@@ -225,35 +226,65 @@ pathview(gene.data = FC,
 #### Task 6 ####
 
 sequences <- getSequence(id = up_DEGs$ensembl_gene_id, mart = ensembl,
-                         type = "ensembl_gene_id", upstream = 500, seqType = '5utr')
+                         type = "ensembl_gene_id", upstream = 500, seqType = "gene_flank")
+
 data("PWMLogn.hg19.MotifDb.Hsap")
-seq <- lapply(sequences$cdna, function(x) DNAString(x))
-enrichedTF <- motifEnrichment(seq[1:20], PWMLogn.hg19.MotifDb.Hsap, score = "affinity")
+seq <- lapply(sequences[,1], function(x) DNAString(x))
+
+enrichedTF <- motifEnrichment(seq[1:40], PWMLogn.hg19.MotifDb.Hsap, score = "affinity")
+
 report <-  groupReport(enrichedTF)
 report
 plot(report[1:5])
 
 #### Task 7 ####
 
-#ID2
-mdb.human <-  subset(MotifDb, organism =='Hsapiens' & geneSymbol == "ID2")
+mdb.human <-  subset(MotifDb, organism =='Hsapiens' & geneSymbol == "TFAP4")
 PWM <-  toPWM(as.list(mdb.human))
 names(PWM) <-  sapply(names(PWM),function(x) strsplit(x,"-")[[1]][3])
 scores <- motifScores(sequences = seq[1:5], PWM, raw.scores = T)
 
 ecdf <-  motifEcdf(PWM, organism = "hg19", quick = TRUE)
-threshold <-  log2(quantile(ecdf$ID2, 0.9975))
+threshold <-  log2(quantile(ecdf$TFAP4, 0.9975))
 threshold
-plotMotifScores(scores, sel.motifs="ID2", col = c("red","green","blue"), cutoff = threshold)
+plotMotifScores(scores, sel.motifs="TFAP4", col = c("red","green","blue"), cutoff = threshold)
 
 #### task 8 ####
 
 tfs <- report$target[1:10]
 scores <- data.frame(c(1:length(seq)))
-#scores <- data.frame(c(1:5))
 
 
-for (i in (1:5)){
+# screaming <- function(trans_factors, Motif){ # may add sequences
+#   
+#   tfs_motif <- subset(MotifDb, organism == "Hsapiens" & geneSymbol == trans_factors[i])
+#   PWM <- toPWM(as.list(tfs_motif))
+#   names(PWM) <-  sapply(names(PWM),function(x) strsplit(x,"-")[[1]][3])
+#   
+#   ecdf <- motifEcdf(PWM, organism = "hg19", quick = T)
+#   threshold <-  log2(quantile(ecdf[[ trans_factors[i] ]], 0.9975))
+#   name <- tfs[i]
+#   
+#   sco <- motifScores(sequences = seq , PWM, cutoff = threshold)
+#   
+#   sco <-  as.data.frame(apply(sco, 1, sum))
+#   colnames(sco) <- name
+#   
+#   return(sco)
+# }
+# 
+# cores <- detectCores()
+# cl <- makeCluster(cores[1]-3)
+# registerDoParallel(cl)
+# 
+# final_scores <- foreach(i = 1:5, .combine = cbind, .packages = c("e1071", "ISLR2")) %dopar% {
+#   sco <- screaming(tfs, MotifDb)
+#   final_scores <- cbind(final_scores, sco)
+# }
+# 
+# stopCluster(cl)
+
+for (i in (1:10)){
   tfs_motif <- subset(MotifDb, organism == "Hsapiens" & geneSymbol == tfs[i])
   PWM <- toPWM(as.list(tfs_motif))
   names(PWM) <-  sapply(names(PWM),function(x) strsplit(x,"-")[[1]][3])
@@ -267,29 +298,36 @@ for (i in (1:5)){
   colnames(sco) <- name
   
   scores <- cbind(scores, sco)
-  
-  #fraction_9975 <- append(fraction_9975, length(which(apply(scores,1,sum) > 0)) /100)
 }
- scores <- scores[,2:ncol(scores)]
 
+scores <- scores[,2:ncol(scores)]
+columns <- c()
+
+for (col in (1:ncol(scores))){
+  if (sum(scores[,col]) < 1){
+    columns <- append(columns, col)
+  }
+}
+scores <- scores[,-columns]
 result <- logical(nrow(scores))
 
 # Loop through each row of the dataframe
 for (i in 1:nrow(scores)) {
   # Check if any value in the row is equal to 0
-  if (any(scores[i, ] < 3)) {
+  if (any(scores[i, ] == 0)) {
     result[i] <- FALSE
   } else {
     result[i] <- TRUE
   }
 }
 
-
-
 #### task 9 ####
 
-up_names <- up_DEGs$external_gene_name
-write.table(up_DEGs$external_gene_name,"up_DEGs.txt", sep="\n", row.names = F)
+top_enrich <- sequences$ensembl_gene_id[result]
+
+up_names <- up_DEGs$external_gene_name[which(top_enrich%in%up_DEGs$ensembl_gene_id)]
+
+write.table(up_names, "motif_enrich.txt", sep="\n", row.names = F)
 links <- read.delim("string_interactions_short.tsv")
 
 #### Task 10 ####
@@ -300,17 +338,17 @@ query <- getBM(attributes = c("external_gene_name","ensembl_gene_id","descriptio
                               "gene_biotype","start_position","end_position",
                               "chromosome_name","strand"),
                filters = c("ensembl_gene_id"), 
-               values = up_DEGs[,1],
+               values = top_enrich,
                mart = ensembl)
 
 query <-  unique(query[,c(1,3:6)])
 
 ## Create the network
-net <- igraph::graph_from_data_frame(d = links, vertices = query, directed = FALSE)
+net <- graph_from_data_frame(d = links, vertices = query, directed = FALSE)
+net_clean <- simplify(net)
 
+# Plot graph
+plot(net_clean)
 
-
-
-
-
-
+# Calcuate the maximal cliques
+maximal.cliques(net_clean)
