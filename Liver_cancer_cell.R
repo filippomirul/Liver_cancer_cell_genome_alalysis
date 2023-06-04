@@ -24,7 +24,8 @@ library(igraph)
 #### Data ####
 my_dir <- ""
 setwd(my_dir)
-load("Liver_hepatocellular_carcinoma.RData")
+
+load("")
 ensembl <- useEnsembl(biomart = "ensembl",
                       dataset = "hsapiens_gene_ensembl",
                       mirror = "useast")
